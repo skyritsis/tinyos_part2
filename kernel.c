@@ -29,6 +29,20 @@ typedef struct PCB_s {
 	enum ProcState state;
 }PCB;
 
+typedef struct message_s {
+	Pid_t sender;
+	Pid_t receiver;
+	long data;
+}message;
+
+typedef struct mlist_s {
+	message* m;
+	struct mlist_s* next;
+}mlist;
+
+mlist* headm = NULL;
+mlist* tailm = NULL;
+
 typedef struct rlist {
 	Pid_t proc;
 	struct rlist* next;
@@ -39,6 +53,8 @@ PCB ProcessTable[MAX_PROC];
 Pid_t PCBcnt;
 Mutex kernel_lock = MUTEX_INIT;
 ucontext_t kernel_context;
+int K=0;
+CondVar *waiting;
 
 /*
  *
@@ -359,6 +375,8 @@ void boot(Task boot_task, int argl, void* args)
 	curproc=NULL;
 	head = NULL;
 	tail = head;
+	K = ((int*)args)[0];
+	waiting = (CondVar*) malloc(sizeof(CondVar)*K);
 	sigemptyset(&scheduler_sigmask);
 	sigaddset(&scheduler_sigmask, SIGVTALRM);
 	quantum_itimer.it_interval.tv_sec = 0L;
@@ -377,17 +395,67 @@ void boot(Task boot_task, int argl, void* args)
 
 Pid_t GetPPid() 
 { 
-  return NOPROC; 
+  return ProcessTable[curproc->proc].parent_pid;
 }
 
 int SendPort(Pid_t receiver, long data)
 {
-  return 0;
+	mlist* node;
+	message* mes;
+	if(receiver>PCBcnt||curproc->proc==receiver||ProcessTable[receiver].state==FINISHED || ProcessTable[receiver].state==DEAD)
+		return -1;
+	mes = malloc(sizeof(message*));
+	mes->receiver = receiver;
+	mes->sender = curproc->proc;
+	mes->data = data;
+	node = malloc(sizeof(mlist*));
+	node->m = mes;
+	node->next = NULL;
+	if(headm==NULL)
+	{
+		headm = node;
+		tailm = node;
+	}
+	else
+	{
+		tailm->next = node;
+		tailm = tailm->next;
+	}
+	Cond_Wait(&kernel_lock,&(waiting[curproc->proc]));
+	if(ProcessTable[receiver].state==FINISHED || ProcessTable[receiver].state==DEAD)
+		return -1;
+	return 0;
 }
 
 Pid_t ReceivePort(long* data, int waitflag)
 {
-  return NOPROC;
+	mlist *search,*search_prev=NULL;;
+	while(1)
+	{
+		if(headm!=NULL)
+		{
+			search = headm;
+			do
+			{
+				if(search->m->receiver == curproc->proc)
+				{
+					data = &search->m->data;
+					Cond_Signal(&(waiting[search->m->sender]));
+					if(search==headm)
+						head = head->next;
+					else
+						search_prev->next = search->next;
+					return search->m->sender;
+				}
+				search_prev = search;
+				search = search->next;
+			}while(search!=NULL);
+		}
+		if(waitflag==0)
+			return NOPROC;
+		else
+			yield();
+	}
 }
 
 int CreateMailBox(const char* mbox)
