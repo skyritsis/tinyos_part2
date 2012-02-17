@@ -303,7 +303,7 @@ Pid_t Exec(Task call, int argl, void* args)
 	//ucontext_t unew;
 	Read *temp;
 	void* stack = malloc(PROCESS_STACK_SIZE);
-	Mutex_Lock(&kernel_lock);
+	//Mutex_Lock(&kernel_lock);
 	PCBcnt = PCBcnt+1;
 	init_context(&ProcessTable[PCBcnt].context, stack, PROCESS_STACK_SIZE, call, argl, args);
 	//ProcessTable[PCBcnt].context = unew;
@@ -327,7 +327,7 @@ Pid_t Exec(Task call, int argl, void* args)
 		tail->next = temp;
 		tail = tail->next;
 	}
-	Mutex_Unlock(&kernel_lock);
+	//Mutex_Unlock(&kernel_lock);
 	return ProcessTable[PCBcnt].pid;//curproc->pid;
 }
 
@@ -352,6 +352,7 @@ Pid_t WaitChild(Pid_t cpid, int* status)
 					{
 						ProcessTable[i].state = DEAD;
 						ProcessTable[i].parent_pid = 0;
+						status = &ProcessTable[i].exitvalue;
 						return ProcessTable[i].pid;
 					}
 				}
@@ -370,6 +371,7 @@ Pid_t WaitChild(Pid_t cpid, int* status)
 
 						ProcessTable[i].state = DEAD;
 						ProcessTable[i].parent_pid = 0;
+						status = &ProcessTable[i].exitvalue;
 						return ProcessTable[i].pid;
 					}
 				}
@@ -461,7 +463,7 @@ Pid_t ReceivePort(long* data, int waitflag)
 					data = &search->m->data;
 					Cond_Signal(&(waiting[search->m->sender]));
 					if(search==headm)
-						head = head->next;
+						headm = headm->next;
 					else
 						search_prev->next = search->next;
 					return search->m->sender;
@@ -497,7 +499,7 @@ int CreateMailBox(const char* mbox)
 	node->mb->Msg_cnt = 0;
 	node->mb->name = mbox;
 	node->mb->owner = curproc->proc;
-	node->mb->Msgs = malloc(max_Msgs*sizeof(Message*));
+	node->mb->Msgs = (Message*)malloc(max_Msgs*sizeof(Message*));
 	if(headmbox==NULL)
 	{
 		headmbox = node;
@@ -527,15 +529,16 @@ int SendMail(const char* mbox, Message* msg)
 	{
 		if(search->mb->name == mbox)
 			break;
-		search = search->next;
+		else
+			search = search->next;
 	}
 	if(search == NULL)
 			return-1;
 	if(search->mb->owner == curproc->proc)
 		return -1;
 	memcpy(&search->mb->Msgs[search->mb->Msg_cnt],msg,sizeof(msg));
-	//search->mb->Msgs[search->mb->Msg_cnt] = msg;
-	search->mb->Msg_cnt++;
+	//search->mb->Msgs[search->mb->Msg_cnt] = *msg;
+	search->mb->Msg_cnt = search->mb->Msg_cnt+1;
 	return 0;
 }
 
@@ -547,7 +550,11 @@ int GetMail(const char* mbox, Message* msg)
 	while(search!=NULL)
 	{
 		if(search->mb->name == mbox)
+		{
+			while(search->mb->Msg_cnt == 0)
+				yield();
 			break;
+		}
 		search = search->next;
 	}
 	if(search == NULL)
