@@ -43,6 +43,25 @@ typedef struct mlist_s {
 mlist* headm = NULL;
 mlist* tailm = NULL;
 
+int max_Msgs = 8;
+int max_Mbox = 100;
+int Mbox_cnt = 0;
+
+typedef struct Mbox_s {
+	Pid_t owner;
+	const char* name;
+	int Msg_cnt;
+	Message* Msgs;
+}Mbox;
+
+typedef struct Mboxlist_s {
+	Mbox* mb;
+	struct Mboxlist_s* next;
+}Mboxlist;
+
+Mboxlist* headmbox = NULL;
+Mboxlist* tailmbox = NULL;
+
 typedef struct rlist {
 	Pid_t proc;
 	struct rlist* next;
@@ -460,7 +479,37 @@ Pid_t ReceivePort(long* data, int waitflag)
 
 int CreateMailBox(const char* mbox)
 {
-  return 0;
+	Mboxlist *node,*search;
+
+	if(mbox==NULL)
+		return -1;
+	if(Mbox_cnt == max_Mbox)
+		return -1;
+	search = headmbox;
+	while(search!=NULL)
+	{
+		if(search->mb->name == mbox)
+			return -1;
+		search = search->next;
+	}
+	node = malloc(sizeof(Mboxlist*));
+	node->mb = malloc(sizeof(Mbox*));
+	node->mb->Msg_cnt = 0;
+	node->mb->name = mbox;
+	node->mb->owner = curproc->proc;
+	node->mb->Msgs = malloc(max_Msgs*sizeof(Message*));
+	if(headmbox==NULL)
+	{
+		headmbox = node;
+		tailmbox = node;
+	}
+	else
+	{
+		tailmbox->next = node;
+		tailmbox = tailmbox->next;
+	}
+	Mbox_cnt++;
+	return 0;
 }
 
 
@@ -471,11 +520,42 @@ int DestroyMailBox(const char* mbox)
 
 int SendMail(const char* mbox, Message* msg)
 {
-  return 0;
+	Mboxlist* search;
+
+	search = headmbox;
+	while(search!=NULL)
+	{
+		if(search->mb->name == mbox)
+			break;
+		search = search->next;
+	}
+	if(search == NULL)
+			return-1;
+	if(search->mb->owner == curproc->proc)
+		return -1;
+	memcpy(&search->mb->Msgs[search->mb->Msg_cnt],msg,sizeof(msg));
+	//search->mb->Msgs[search->mb->Msg_cnt] = msg;
+	search->mb->Msg_cnt++;
+	return 0;
 }
 
 int GetMail(const char* mbox, Message* msg)
 {
-  return 0;
+	Mboxlist* search;
+
+	search = headmbox;
+	while(search!=NULL)
+	{
+		if(search->mb->name == mbox)
+			break;
+		search = search->next;
+	}
+	if(search == NULL)
+		return-1;
+	if(search->mb->owner != curproc->proc)
+		return -1;
+	msg = &search->mb->Msgs[search->mb->Msg_cnt];
+	search->mb->Msg_cnt--;
+	return 0;
 }
 
