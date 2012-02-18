@@ -51,6 +51,8 @@ typedef struct Mbox_s {
 	Pid_t owner;
 	const char* name;
 	int Msg_cnt;
+	int Msg_ins;
+	int Msg_p;
 	Message* Msgs;
 }Mbox;
 
@@ -73,7 +75,7 @@ Pid_t PCBcnt;
 Mutex kernel_lock = MUTEX_INIT;
 ucontext_t kernel_context;
 int K=0;
-CondVar *waiting;
+CondVar *waiting,*waitingM;
 
 /*
  *
@@ -111,7 +113,7 @@ void schedule(int sig){
 	pause_scheduling();
 	if(ProcessTable[curproc->proc].state==READY)
 	{
-		i = malloc(sizeof(Read*));
+		i = (Read*)malloc(sizeof(Read));
 		i->proc = curproc->proc;
 		tail->next = i;
 		tail = tail->next;
@@ -144,7 +146,7 @@ void wakeup(Pid_t pid){
 	Read *temp;
 
 	ProcessTable[pid].state = READY;
-	temp = malloc(sizeof(Read*));
+	temp = (Read*)malloc(sizeof(Read));
 	temp->proc = pid;
 	temp->next = NULL;
 	if(head==NULL)
@@ -157,6 +159,7 @@ void wakeup(Pid_t pid){
 		tail->next = temp;
 		tail=tail->next;
 	}
+	//curproc = temp;
 	//yield();
 	//curproc->next=NULL;
 }
@@ -303,14 +306,14 @@ Pid_t Exec(Task call, int argl, void* args)
 	//ucontext_t unew;
 	Read *temp;
 	void* stack = malloc(PROCESS_STACK_SIZE);
-	//Mutex_Lock(&kernel_lock);
+	Mutex_Lock(&kernel_lock);
 	PCBcnt = PCBcnt+1;
 	init_context(&ProcessTable[PCBcnt].context, stack, PROCESS_STACK_SIZE, call, argl, args);
 	//ProcessTable[PCBcnt].context = unew;
 	ProcessTable[PCBcnt].parent_pid = (curproc==NULL) ? 0 : curproc->proc;
 	ProcessTable[PCBcnt].pid = PCBcnt;
 	ProcessTable[PCBcnt].state = READY;
-	temp = malloc(sizeof(Read*));
+	temp = (Read*)malloc(sizeof(Read));
 	temp->proc = PCBcnt;
 	temp->next = NULL;
 	if(head==NULL)
@@ -327,7 +330,7 @@ Pid_t Exec(Task call, int argl, void* args)
 		tail->next = temp;
 		tail = tail->next;
 	}
-	//Mutex_Unlock(&kernel_lock);
+	Mutex_Unlock(&kernel_lock);
 	return ProcessTable[PCBcnt].pid;//curproc->pid;
 }
 
@@ -397,7 +400,8 @@ void boot(Task boot_task, int argl, void* args)
 	head = NULL;
 	tail = head;
 	K = ((int*)args)[0];
-	waiting = (CondVar*) malloc(sizeof(CondVar)*K);
+	waiting = (CondVar*) malloc(sizeof(CondVar)*(K+K+K));
+	waitingM = (CondVar*) malloc(sizeof(CondVar)*(K+K+K));
 	sigemptyset(&scheduler_sigmask);
 	sigaddset(&scheduler_sigmask, SIGVTALRM);
 	quantum_itimer.it_interval.tv_sec = 0L;
@@ -423,13 +427,15 @@ int SendPort(Pid_t receiver, long data)
 {
 	mlist* node;
 	message* mes;
+
+	Mutex_Lock(&kernel_lock);
 	if(receiver>PCBcnt||curproc->proc==receiver||ProcessTable[receiver].state==FINISHED || ProcessTable[receiver].state==DEAD)
 		return -1;
-	mes = malloc(sizeof(message*));
+	mes = (message*)malloc(sizeof(message));
 	mes->receiver = receiver;
 	mes->sender = curproc->proc;
 	mes->data = data;
-	node = malloc(sizeof(mlist*));
+	node = (mlist*)malloc(sizeof(mlist));
 	node->m = mes;
 	node->next = NULL;
 	if(headm==NULL)
@@ -444,13 +450,20 @@ int SendPort(Pid_t receiver, long data)
 	}
 	Cond_Wait(&kernel_lock,&(waiting[curproc->proc]));
 	if(ProcessTable[receiver].state==FINISHED || ProcessTable[receiver].state==DEAD)
+	{
+		Mutex_Unlock(&kernel_lock);
 		return -1;
+	}
+	Cond_Signal(&(waiting[mes->receiver]));
+	Mutex_Unlock(&kernel_lock);
 	return 0;
 }
 
 Pid_t ReceivePort(long* data, int waitflag)
 {
 	mlist *search,*search_prev=NULL;;
+
+	Mutex_Lock(&kernel_lock);
 	while(1)
 	{
 		if(headm!=NULL)
@@ -460,22 +473,26 @@ Pid_t ReceivePort(long* data, int waitflag)
 			{
 				if(search->m->receiver == curproc->proc)
 				{
-					data = &search->m->data;
-					Cond_Signal(&(waiting[search->m->sender]));
+					*data = search->m->data;
 					if(search==headm)
 						headm = headm->next;
 					else
 						search_prev->next = search->next;
+					Cond_Signal(&(waiting[search->m->sender]));
+					Mutex_Unlock(&kernel_lock);
 					return search->m->sender;
 				}
 				search_prev = search;
 				search = search->next;
 			}while(search!=NULL);
 		}
-		if(waitflag==0)
+		//Mutex_Unlock(&kernel_lock);
+		if(waitflag==0){
+			Mutex_Unlock(&kernel_lock);
 			return NOPROC;
+		}
 		else
-			yield();
+			Cond_Wait(&kernel_lock,&(waiting[curproc->proc]));
 	}
 }
 
@@ -483,6 +500,7 @@ int CreateMailBox(const char* mbox)
 {
 	Mboxlist *node,*search;
 
+	Mutex_Lock(&kernel_lock);
 	if(mbox==NULL)
 		return -1;
 	if(Mbox_cnt == max_Mbox)
@@ -494,12 +512,14 @@ int CreateMailBox(const char* mbox)
 			return -1;
 		search = search->next;
 	}
-	node = malloc(sizeof(Mboxlist*));
-	node->mb = malloc(sizeof(Mbox*));
+	node = (Mboxlist*)malloc(sizeof(Mboxlist));
+	node->mb = (Mbox*)malloc(sizeof(Mbox));
 	node->mb->Msg_cnt = 0;
+	node->mb->Msg_p = 0;
+	node->mb->Msg_ins = 0;
 	node->mb->name = mbox;
 	node->mb->owner = curproc->proc;
-	node->mb->Msgs = (Message*)malloc(max_Msgs*sizeof(Message*));
+	node->mb->Msgs = (Message*)malloc(max_Msgs*sizeof(Message));
 	if(headmbox==NULL)
 	{
 		headmbox = node;
@@ -511,6 +531,7 @@ int CreateMailBox(const char* mbox)
 		tailmbox = tailmbox->next;
 	}
 	Mbox_cnt++;
+	Mutex_Unlock(&kernel_lock);
 	return 0;
 }
 
@@ -524,6 +545,7 @@ int SendMail(const char* mbox, Message* msg)
 {
 	Mboxlist* search;
 
+	Mutex_Lock(&kernel_lock);
 	search = headmbox;
 	while(search!=NULL)
 	{
@@ -536,9 +558,27 @@ int SendMail(const char* mbox, Message* msg)
 			return-1;
 	if(search->mb->owner == curproc->proc)
 		return -1;
-	memcpy(&search->mb->Msgs[search->mb->Msg_cnt],msg,sizeof(msg));
-	//search->mb->Msgs[search->mb->Msg_cnt] = *msg;
+	if(search->mb->Msg_cnt==max_Msgs)
+		Cond_Wait(&kernel_lock,&(waitingM[curproc->proc]));
+	//search->mb->Msgs[search->mb->Msg_cnt] = (void*)malloc(sizeof(Message));
+	msg->sender = curproc->proc;
+	//search->mb->Msgs[search->mb->Msg_ins].data = msg->data;
+	search->mb->Msgs[search->mb->Msg_ins].len = msg->len;
+	search->mb->Msgs[search->mb->Msg_ins].sender = curproc->proc;
+	search->mb->Msgs[search->mb->Msg_ins].type = msg->type;
+	if(msg->len!=0){
+		search->mb->Msgs[search->mb->Msg_cnt].data = (void*)malloc(msg->len);
+		memcpy(search->mb->Msgs[search->mb->Msg_cnt].data,msg->data,msg->len);
+	}
+	else
+		search->mb->Msgs[search->mb->Msg_cnt].data = NULL;
+	printf("\ninside Process %d: %s %d inside \n",curproc->proc,(char*)search->mb->Msgs[search->mb->Msg_ins].data,msg->len);//search->mb->Msgs[search->mb->Msg_cnt].data);
+	search->mb->Msg_ins = search->mb->Msg_ins +1;
+	if(search->mb->Msg_ins==max_Msgs)
+		search->mb->Msg_ins = 0;
 	search->mb->Msg_cnt = search->mb->Msg_cnt+1;
+	Cond_Signal(&(waitingM[search->mb->owner]));
+	Mutex_Unlock(&kernel_lock);
 	return 0;
 }
 
@@ -546,23 +586,36 @@ int GetMail(const char* mbox, Message* msg)
 {
 	Mboxlist* search;
 
+	Mutex_Lock(&kernel_lock);
 	search = headmbox;
 	while(search!=NULL)
 	{
 		if(search->mb->name == mbox)
 		{
-			while(search->mb->Msg_cnt == 0)
-				yield();
 			break;
 		}
 		search = search->next;
 	}
+	if(search->mb->Msg_cnt == 0)
+		Cond_Wait(&kernel_lock,&(waitingM[curproc->proc]));
 	if(search == NULL)
 		return-1;
 	if(search->mb->owner != curproc->proc)
 		return -1;
-	msg = &search->mb->Msgs[search->mb->Msg_cnt];
-	search->mb->Msg_cnt--;
+	//msg = malloc(sizeof(Message));
+	msg->data = search->mb->Msgs[search->mb->Msg_p].data;
+	msg->len = search->mb->Msgs[search->mb->Msg_p].len;
+	//msg->data = (void*)malloc(msg->len);
+	//memcpy(msg->data,search->mb->Msgs[search->mb->Msg_p].data,msg->len);
+	msg->sender = search->mb->Msgs[search->mb->Msg_p].sender;
+	msg->type = search->mb->Msgs[search->mb->Msg_p].type;
+	search->mb->Msg_p = search->mb->Msg_p +1;
+	if(search->mb->Msg_p == max_Msgs)
+		search->mb->Msg_p = 0;
+	if(search->mb->Msg_cnt != 0)
+		search->mb->Msg_cnt = search->mb->Msg_cnt - 1;
+	Cond_Signal(&(waitingM[msg->sender]));
+	Mutex_Unlock(&kernel_lock);
 	return 0;
 }
 
