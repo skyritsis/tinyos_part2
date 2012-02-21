@@ -347,6 +347,7 @@ Pid_t Exec(Task call, int argl, void* args)
 	ProcessTable[PCBcnt].parent_pid = (curproc==NULL) ? 0 : curproc->proc;
 	ProcessTable[PCBcnt].pid = PCBcnt;
 	ProcessTable[PCBcnt].state = READY;
+	ProcessTable[PCBcnt].msg = NULL;
 	temp = (Read*)malloc(sizeof(Read));
 	temp->proc = PCBcnt;
 	temp->next = NULL;
