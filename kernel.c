@@ -435,7 +435,7 @@ void boot(Task boot_task, int argl, void* args)
 	K = ((int*)args)[0];
 	waiting = (CondVar*) malloc(sizeof(CondVar)*MAX_PROC);
 	waitingM = (CondVar*) malloc(sizeof(CondVar)*MAX_PROC);
-	for(i=0;i<3*K;i++) {
+	for(i=0;i<MAX_PROC;i++) {
 	    Cond_Init(&(waiting[i]));
 	    Cond_Init(&(waitingM[i]));
 	  }
